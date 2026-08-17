@@ -1,65 +1,69 @@
-import { WorkflowEntrypoint, WorkflowStep } from "cloudflare:workers";
-import type { WorkflowEvent } from "cloudflare:workers";
+import { WorkflowEntrypoint } from "cloudflare:workers";
+import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 
-/**
- * This workflow showcases:
- * - Durable step execution with step.do
- * - Time-based delays with step.sleep
- * - Interactive pausing with step.waitForEvent
- * - Data flow between steps
- *
- * @see https://developers.cloudflare.com/workflows
- */
-export class MyWorkflow extends WorkflowEntrypoint<
-	Env,
-	Record<string, unknown>
-> {
-	async run(event: WorkflowEvent<Record<string, unknown>>, step: WorkflowStep) {
-		const instanceId = event.instanceId;
+type ExplodelySale = {
+  orderid: string;
+  amount: number;
+  seller: string;
+  tid: string;
+  affcup: string;
+  country: string;
+  saletimestamp: string;
+  receivedAt: number;
+};
 
-		// Notify Durable Object of step progress. Called outside step.do, so this
-		// operation may repeat. Safe here because updateStep is idempotent.
-		// Refer to: https://developers.cloudflare.com/workflows/build/rules-of-workflows/
-		const notifyStep = async (
-			stepName: string,
-			status: "running" | "completed" | "waiting",
-		) => {
-			try {
-				const doId = this.env.WORKFLOW_STATUS.idFromName(instanceId);
-				const stub = this.env.WORKFLOW_STATUS.get(doId);
-				await stub.updateStep(stepName, status);
-			} catch {
-				// Silently fail
-			}
-		};
+export class MyWorkflow extends WorkflowEntrypoint<Env, ExplodelySale> {
+  async run(event: WorkflowEvent<ExplodelySale>, step: WorkflowStep) {
+    const instanceId = event.instanceId;
+    const statusStub = this.env.WORKFLOW_STATUS.get(
+      this.env.WORKFLOW_STATUS.idFromName(instanceId),
+    ) as any;
 
-		// Step 1: Basic step - shows step.do usage
-		await notifyStep("process data", "running");
-		const result = await step.do("process data", async () => {
-			await new Promise((resolve) => setTimeout(resolve, 1000));
-			return { processed: true, timestamp: Date.now() };
-		});
-		await notifyStep("process data", "completed");
+    const notify = async (name: string, status: "running" | "completed") => {
+      try {
+        await statusStub.updateStep(name, status);
+      } catch {
+        // Metrics recording must not fail because a live-status update failed.
+      }
+    };
 
-		// Step 2: Sleep step - shows step.sleep for delays
-		await notifyStep("wait 2 seconds", "running");
-		await step.sleep("wait 2 seconds", "2 seconds");
-		await notifyStep("wait 2 seconds", "completed");
+    await notify("validate sale", "running");
+    const sale = await step.do("validate sale", async () => {
+      const p = event.payload;
+      if (!p.orderid || !Number.isFinite(p.amount) || p.amount < 0) {
+        throw new Error("Invalid Explodely sale event");
+      }
+      return {
+        orderid: p.orderid,
+        amount: Number(p.amount),
+        seller: p.seller || "",
+        tid: p.tid || "",
+        country: p.country || "",
+        saletimestamp: p.saletimestamp || "",
+        receivedAt: p.receivedAt || Date.now(),
+      };
+    });
+    await notify("validate sale", "completed");
 
-		// Step 3: Wait for event - shows interactive step.waitForEvent
-		await notifyStep("wait for approval", "waiting");
-		const approval = await step.waitForEvent("wait for approval", {
-			type: "user-approval",
-			timeout: "60 minutes",
-		});
-		await notifyStep("wait for approval", "completed");
+    await notify("record commission", "running");
+    const result = await step.do("record commission", async () => {
+      const dashboard = this.env.WORKFLOW_STATUS.get(
+        this.env.WORKFLOW_STATUS.idFromName("moneyhi11s-dashboard"),
+      ) as any;
+      return await dashboard.recordSale(sale);
+    });
+    await notify("record commission", "completed");
 
-		// Step 4: Final step
-		await notifyStep("final", "running");
-		await step.do("final", async () => {
-			console.log("Results:", { result, approval: approval.payload });
-			await new Promise((resolve) => setTimeout(resolve, 1000));
-		});
-		await notifyStep("final", "completed");
-	}
+    await notify("finish", "running");
+    const output = await step.do("finish", async () => ({
+      orderid: sale.orderid,
+      recorded: !result.duplicate,
+      duplicate: Boolean(result.duplicate),
+      amount: sale.amount,
+      source: result.source,
+      offer: result.offer,
+    }));
+    await notify("finish", "completed");
+    return output;
+  }
 }
