@@ -24,6 +24,14 @@ type SaleRecord = {
 };
 
 type RefundInput = { orderid: string; amount: number; receivedAt: number };
+type OAuthMeta = {
+  connected: boolean;
+  scope?: string;
+  openId?: string;
+  expiresAt?: number;
+  refreshExpiresAt?: number;
+  updatedAt?: number;
+};
 
 const blank = (): PerformanceStats => ({
   clicks: 0,
@@ -258,6 +266,36 @@ export class WorkflowStatusDO extends DurableObject {
       })),
       updatedAt: Date.now(),
     };
+  }
+
+  async putOAuthState(provider: string, state: string, expiresAt: number): Promise<void> {
+    await this.ctx.storage.put(`oauth:state:${provider}`, { state, expiresAt });
+  }
+
+  async consumeOAuthState(provider: string, state: string): Promise<boolean> {
+    const key = `oauth:state:${provider}`;
+    const record = await this.ctx.storage.get<{ state: string; expiresAt: number }>(key);
+    await this.ctx.storage.delete(key);
+    if (!record || record.expiresAt < Date.now()) return false;
+    return record.state === state;
+  }
+
+  async putOAuthBlob(provider: string, blob: string, meta: OAuthMeta): Promise<void> {
+    await this.ctx.storage.put(`oauth:blob:${provider}`, blob);
+    await this.ctx.storage.put(`oauth:meta:${provider}`, meta);
+  }
+
+  async getOAuthBlob(provider: string): Promise<string | null> {
+    return (await this.ctx.storage.get<string>(`oauth:blob:${provider}`)) || null;
+  }
+
+  async getOAuthStatus(): Promise<Record<string, OAuthMeta>> {
+    const output: Record<string, OAuthMeta> = {};
+    for (const provider of ["youtube", "tiktok"]) {
+      const meta = await this.ctx.storage.get<OAuthMeta>(`oauth:meta:${provider}`);
+      output[provider] = meta || { connected: false };
+    }
+    return output;
   }
 
   async webSocketMessage(ws: WebSocket, _message: string): Promise<void> {
