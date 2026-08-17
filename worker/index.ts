@@ -1,3 +1,5 @@
+import { handleOAuthRoute } from "./oauth";
+
 export { MyWorkflow } from "./workflow";
 export { WorkflowStatusDO } from "./durable-object";
 
@@ -166,6 +168,9 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const base = `${url.protocol}//${url.host}`;
+
+    const oauthResponse = await handleOAuthRoute(request, env);
+    if (oauthResponse) return oauthResponse;
 
     if (url.pathname === "/robots.txt") {
       return new Response(`User-agent: *\nAllow: /\nSitemap: ${base}/sitemap.xml\n`, { headers: { "content-type": "text/plain; charset=UTF-8", "cache-control": "public, max-age=3600" } });
